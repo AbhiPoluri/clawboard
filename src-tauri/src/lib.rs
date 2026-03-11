@@ -50,6 +50,37 @@ fn openclaw_doctor() -> String {
 }
 
 #[tauri::command]
+fn ollama_installed() -> bool {
+    which::which("ollama").is_ok()
+}
+
+#[tauri::command]
+fn ollama_list_models() -> Vec<String> {
+    let output = Command::new("ollama").args(["list"]).output();
+    match output {
+        Ok(o) => {
+            let text = String::from_utf8_lossy(&o.stdout).to_string();
+            text.lines()
+                .skip(1) // skip header
+                .filter_map(|line| line.split_whitespace().next())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect()
+        }
+        Err(_) => vec![],
+    }
+}
+
+#[tauri::command]
+fn ollama_pull(model: String) -> Result<String, String> {
+    let output = Command::new("ollama")
+        .args(["pull", &model])
+        .output()
+        .map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[tauri::command]
 fn openclaw_start() -> Result<(), String> {
     Command::new("openclaw")
         .args(["start"])
@@ -79,6 +110,9 @@ pub fn run() {
             openclaw_doctor,
             openclaw_start,
             openclaw_stop,
+            ollama_installed,
+            ollama_list_models,
+            ollama_pull,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
