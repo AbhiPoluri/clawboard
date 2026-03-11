@@ -2,8 +2,9 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./index.css";
 
-type Tab = "status" | "config" | "setup";
+type Tab = "status" | "config";
 type Provider = "anthropic" | "openai" | "ollama" | "vllm";
+type Step = "check" | "install_node" | "install_openclaw" | "config" | "ready";
 
 interface Config {
   llm?: { provider?: string; api_key?: string; model?: string; base_url?: string };
@@ -14,17 +15,32 @@ const POPULAR_OLLAMA_MODELS = [
   "llama3.2", "llama3.1", "mistral", "phi4", "gemma3", "qwen2.5", "deepseek-r1"
 ];
 
+function StatusDot({ ok, pulse }: { ok: boolean; pulse?: boolean }) {
+  return <div className={`w-2 h-2 rounded-full flex-shrink-0 ${ok ? "bg-green-400" : "bg-zinc-600"} ${pulse && ok ? "animate-pulse" : ""}`} />;
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>("status");
-  const [installed, setInstalled] = useState<boolean | null>(null);
+
+  // Onboarding state
+  const [nodeOk, setNodeOk] = useState<boolean | null>(null);
+  const [clawOk, setClawOk] = useState<boolean | null>(null);
+  const [configOk, setConfigOk] = useState(false);
+  const [step, setStep] = useState<Step>("check");
+  const [installing, setInstalling] = useState(false);
+  const [installMsg, setInstallMsg] = useState("");
+
+  // Runtime state
   const [running, setRunning] = useState(false);
+  const [doctorOutput, setDoctorOutput] = useState("");
+
+  // Config state
   const [configText, setConfigText] = useState("{}");
   const [config, setConfig] = useState<Config>({});
-  const [doctorOutput, setDoctorOutput] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
 
   // Ollama
-  const [ollamaInstalled, setOllamaInstalled] = useState(false);
+  const [ollamaOk, setOllamaOk] = useState(false);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [pulling, setPulling] = useState(false);
   const [pullTarget, setPullTarget] = useState("llama3.2");
@@ -36,16 +52,29 @@ function App() {
   const [vllmModels, setVllmModels] = useState<string[]>([]);
   const [vllmChecking, setVllmChecking] = useState(false);
 
-  useEffect(() => {
-    checkInstalled();
-    loadConfig();
-    checkOllama();
-  }, []);
+  useEffect(() => { runChecks(); }, []);
 
-  async function checkInstalled() {
-    const ok: boolean = await invoke("openclaw_installed");
-    setInstalled(ok);
-    if (ok) checkStatus();
+  async function runChecks() {
+    setStep("check");
+    const node: boolean = await invoke("node_installed");
+    setNodeOk(node);
+    if (!node) { setStep("install_node"); return; }
+
+    const claw: boolean = await invoke("openclaw_installed");
+    setClawOk(claw);
+    if (!claw) { setStep("install_openclaw"); return; }
+
+    await loadConfig();
+    await checkStatus();
+    await checkOllama();
+
+    // Check if config has a provider set
+    const raw: string = await invoke("read_config");
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed.llm?.provider) { setConfigOk(true); setStep("ready"); }
+      else setStep("config");
+    } catch { setStep("config"); }
   }
 
   async function checkStatus() {
@@ -69,8 +98,29 @@ function App() {
     try {
       await invoke("write_config", { content: configText });
       setSaveMsg("Saved.");
+      setConfigOk(true);
+      setStep("ready");
       setTimeout(() => setSaveMsg(""), 2000);
     } catch (e) { setSaveMsg(`Error: ${e}`); }
+  }
+
+  async function installOpenclaw() {
+    setInstalling(true);
+    setInstallMsg("Installing openclaw via npm...");
+    try {
+      const msg: string = await invoke("install_openclaw");
+      setInstallMsg(msg);
+      setClawOk(true);
+      setStep("config");
+    } catch (e) {
+      setInstallMsg(`Failed: ${e}`);
+    }
+    setInstalling(false);
+  }
+
+  async function installOllama() {
+    const msg: string = await invoke("install_ollama");
+    setInstallMsg(msg);
   }
 
   async function runDoctor() {
@@ -86,7 +136,7 @@ function App() {
 
   async function checkOllama() {
     const ok: boolean = await invoke("ollama_installed");
-    setOllamaInstalled(ok);
+    setOllamaOk(ok);
     if (ok) {
       const models: string[] = await invoke("ollama_list_models");
       setOllamaModels(models);
@@ -95,7 +145,7 @@ function App() {
 
   async function pullModel() {
     setPulling(true);
-    setPullMsg("Pulling... this may take a minute.");
+    setPullMsg("Pulling... may take a minute.");
     try {
       await invoke("ollama_pull", { model: pullTarget });
       setPullMsg(`Done! ${pullTarget} ready.`);
@@ -114,9 +164,7 @@ function App() {
     if (ok) {
       const models: string[] = await invoke("vllm_list_models", { baseUrl: vllmBaseUrl });
       setVllmModels(models);
-      if (models.length > 0) {
-        updateConfigField(["llm", "model"], models[0]);
-      }
+      if (models.length > 0) updateConfigField(["llm", "model"], models[0]);
       updateConfigField(["llm", "base_url"], vllmBaseUrl);
     }
     setVllmChecking(false);
@@ -153,70 +201,127 @@ function App() {
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-mono text-sm flex flex-col">
+      {/* Header */}
       <div className="flex items-center gap-3 px-5 py-3 border-b border-zinc-800">
         <span className="text-lg">🦞</span>
         <span className="font-semibold text-zinc-200 tracking-tight">Clawboard</span>
-        <span className="text-xs text-zinc-500 ml-auto">OpenClaw UI</span>
-      </div>
-
-      <div className="flex gap-1 px-5 pt-3">
-        {(["status", "config", "setup"] as Tab[]).map((t) => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-3 py-1 rounded text-xs capitalize transition-colors ${tab === t ? "bg-orange-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>
-            {t}
-          </button>
-        ))}
+        <div className="ml-auto flex gap-1">
+          {(["status", "config"] as Tab[]).map((t) => (
+            <button key={t} onClick={() => setTab(t)}
+              className={`px-3 py-1 rounded text-xs capitalize transition-colors ${tab === t ? "bg-orange-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>
+              {t}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="flex-1 px-5 py-4 overflow-auto">
 
-        {/* STATUS */}
+        {/* ── STATUS TAB ── */}
         {tab === "status" && (
           <div className="space-y-4">
-            <div className="flex items-center gap-3">
-              <div className={`w-2 h-2 rounded-full ${installed ? "bg-green-400" : "bg-red-400"}`} />
-              <span className="text-zinc-300">openclaw {installed === null ? "checking..." : installed ? "installed" : "not installed"}</span>
-            </div>
-            {installed && (
+
+            {/* Step: install node */}
+            {step === "install_node" && (
+              <div className="p-4 bg-zinc-900 rounded space-y-3">
+                <p className="text-zinc-200 font-semibold">Node.js required</p>
+                <p className="text-xs text-zinc-400">OpenClaw is installed via npm. Install Node.js first.</p>
+                <button onClick={() => invoke("install_ollama").then(() => window.open("https://nodejs.org/en/download"))}
+                  className="px-4 py-2 rounded text-xs bg-orange-500 text-white hover:bg-orange-600 w-full">
+                  Open nodejs.org to install Node.js
+                </button>
+                <button onClick={runChecks} className="px-4 py-2 rounded text-xs bg-zinc-700 text-zinc-200 hover:bg-zinc-600 w-full">
+                  I installed it — check again
+                </button>
+              </div>
+            )}
+
+            {/* Step: install openclaw */}
+            {step === "install_openclaw" && (
+              <div className="p-4 bg-zinc-900 rounded space-y-3">
+                <p className="text-zinc-200 font-semibold">Install OpenClaw</p>
+                <p className="text-xs text-zinc-400">OpenClaw is not installed. Install it now — no terminal needed.</p>
+                <button onClick={installOpenclaw} disabled={installing}
+                  className="px-4 py-2 rounded text-xs bg-orange-500 text-white hover:bg-orange-600 w-full disabled:opacity-50">
+                  {installing ? "Installing..." : "Install OpenClaw"}
+                </button>
+                {installMsg && <p className="text-xs text-zinc-400">{installMsg}</p>}
+              </div>
+            )}
+
+            {/* Step: needs config */}
+            {step === "config" && (
+              <div className="p-4 bg-zinc-900 rounded space-y-2">
+                <p className="text-zinc-200 font-semibold">Almost there</p>
+                <p className="text-xs text-zinc-400">Choose an AI provider to finish setup.</p>
+                <button onClick={() => setTab("config")}
+                  className="px-4 py-2 rounded text-xs bg-orange-500 text-white hover:bg-orange-600 w-full">
+                  Set up AI provider →
+                </button>
+              </div>
+            )}
+
+            {/* Ready state */}
+            {step === "ready" && (
               <>
-                <div className="flex items-center gap-3">
-                  <div className={`w-2 h-2 rounded-full ${running ? "bg-green-400 animate-pulse" : "bg-zinc-600"}`} />
-                  <span className="text-zinc-300">agent {running ? "running" : "stopped"}</span>
-                  <button onClick={toggleAgent} className={`ml-auto px-3 py-1 rounded text-xs ${running ? "bg-red-900 text-red-300 hover:bg-red-800" : "bg-green-900 text-green-300 hover:bg-green-800"}`}>
-                    {running ? "Stop" : "Start"}
-                  </button>
-                  <button onClick={checkStatus} className="px-3 py-1 rounded text-xs bg-zinc-800 text-zinc-400 hover:bg-zinc-700">Refresh</button>
+                {/* Checklist */}
+                <div className="space-y-2">
+                  {[
+                    { label: "Node.js", ok: !!nodeOk },
+                    { label: "OpenClaw", ok: !!clawOk },
+                    { label: "AI provider configured", ok: configOk },
+                  ].map(({ label, ok }) => (
+                    <div key={label} className="flex items-center gap-3">
+                      <StatusDot ok={ok} />
+                      <span className={`text-xs ${ok ? "text-zinc-300" : "text-zinc-500"}`}>{label}</span>
+                      {ok && <span className="text-xs text-green-500 ml-auto">✓</span>}
+                    </div>
+                  ))}
                 </div>
-                <div>
-                  <button onClick={runDoctor} className="px-3 py-1 rounded text-xs bg-zinc-800 text-zinc-400 hover:bg-zinc-700">Run openclaw doctor</button>
+
+                {/* Agent control */}
+                <div className="flex items-center gap-3 pt-2">
+                  <StatusDot ok={running} pulse />
+                  <span className="text-zinc-300 text-xs">Agent {running ? "running" : "stopped"}</span>
+                  <button onClick={toggleAgent}
+                    className={`ml-auto px-4 py-1.5 rounded text-xs font-medium ${running ? "bg-red-900 text-red-300 hover:bg-red-800" : "bg-green-900 text-green-300 hover:bg-green-800"}`}>
+                    {running ? "Stop agent" : "Start agent"}
+                  </button>
+                </div>
+                <button onClick={checkStatus} className="text-xs text-zinc-500 hover:text-zinc-300">Refresh status</button>
+
+                {/* Doctor */}
+                <div className="pt-1">
+                  <button onClick={runDoctor} className="px-3 py-1 rounded text-xs bg-zinc-800 text-zinc-400 hover:bg-zinc-700">
+                    Run diagnostics
+                  </button>
                   {doctorOutput && <pre className="mt-2 p-3 bg-zinc-900 rounded text-xs text-zinc-400 whitespace-pre-wrap max-h-48 overflow-auto">{doctorOutput}</pre>}
                 </div>
               </>
             )}
-            {installed === false && (
-              <div className="p-3 bg-zinc-900 rounded text-zinc-400 text-xs">
-                OpenClaw not installed. Visit <span className="text-orange-400">openclaw.ai</span> to get started.
-              </div>
+
+            {/* Checking state */}
+            {step === "check" && (
+              <p className="text-xs text-zinc-500 animate-pulse">Checking your setup...</p>
             )}
           </div>
         )}
 
-        {/* CONFIG */}
+        {/* ── CONFIG TAB ── */}
         {tab === "config" && (
           <div className="space-y-4">
             <div className="space-y-3">
               <div className="space-y-1">
-                <label className="text-xs text-zinc-500 uppercase tracking-wider">Provider</label>
+                <label className="text-xs text-zinc-500 uppercase tracking-wider">AI Provider</label>
                 <select value={provider} onChange={(e) => updateConfigField(["llm", "provider"], e.target.value)}
                   className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-orange-500">
-                  <option value="anthropic">Anthropic (Claude)</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="ollama">Ollama — local, free</option>
+                  <option value="anthropic">Anthropic (Claude) — needs API key</option>
+                  <option value="openai">OpenAI — needs API key</option>
+                  <option value="ollama">Ollama — local, free, no key</option>
                   <option value="vllm">vLLM — self-hosted server</option>
                 </select>
               </div>
 
-              {/* API key — not needed for ollama/vllm */}
               {(provider === "anthropic" || provider === "openai") && (
                 <div className="space-y-1">
                   <label className="text-xs text-zinc-500 uppercase tracking-wider">API Key</label>
@@ -227,28 +332,25 @@ function App() {
                 </div>
               )}
 
-              {/* vLLM base URL */}
               {provider === "vllm" && (
                 <div className="space-y-1">
                   <label className="text-xs text-zinc-500 uppercase tracking-wider">Server URL</label>
                   <div className="flex gap-2">
-                    <input type="text" value={vllmBaseUrl}
-                      onChange={(e) => setVllmBaseUrl(e.target.value)}
+                    <input type="text" value={vllmBaseUrl} onChange={(e) => setVllmBaseUrl(e.target.value)}
                       placeholder="http://localhost:8000"
-                      className="flex-1 bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-orange-500 placeholder:text-zinc-600" />
+                      className="flex-1 bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-orange-500" />
                     <button onClick={checkVllm} disabled={vllmChecking}
                       className="px-3 py-1 rounded text-xs bg-zinc-700 text-zinc-200 hover:bg-zinc-600 disabled:opacity-50">
                       {vllmChecking ? "..." : "Check"}
                     </button>
                   </div>
                   <div className="flex items-center gap-2 mt-1">
-                    <div className={`w-1.5 h-1.5 rounded-full ${vllmRunning ? "bg-green-400" : "bg-zinc-600"}`} />
+                    <StatusDot ok={vllmRunning} />
                     <span className="text-xs text-zinc-500">{vllmRunning ? `connected · ${vllmModels.length} model(s)` : "not connected"}</span>
                   </div>
                 </div>
               )}
 
-              {/* Model picker */}
               <div className="space-y-1">
                 <label className="text-xs text-zinc-500 uppercase tracking-wider">Model</label>
                 {provider === "ollama" ? (
@@ -271,21 +373,26 @@ function App() {
               </div>
             </div>
 
-            {/* Ollama pull section */}
+            {/* Ollama section */}
             {provider === "ollama" && (
               <div className="p-3 bg-zinc-900 rounded space-y-3">
                 <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full ${ollamaInstalled ? "bg-green-400" : "bg-red-400"}`} />
+                  <StatusDot ok={ollamaOk} />
                   <span className="text-xs text-zinc-400">
-                    Ollama {ollamaInstalled ? `installed · ${ollamaModels.length} model(s)` : "not installed — install from ollama.ai"}
+                    Ollama {ollamaOk ? `installed · ${ollamaModels.length} model(s)` : "not installed"}
                   </span>
+                  {!ollamaOk && (
+                    <button onClick={installOllama} className="ml-auto text-xs text-orange-400 hover:underline">
+                      Install Ollama →
+                    </button>
+                  )}
                 </div>
-                {ollamaInstalled && (
+                {ollamaOk && (
                   <div className="space-y-2">
-                    <p className="text-xs text-zinc-500">Pull a model</p>
+                    <p className="text-xs text-zinc-500">Pull a model (downloads it locally)</p>
                     <div className="flex gap-2">
                       <select value={pullTarget} onChange={(e) => setPullTarget(e.target.value)}
-                        className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-zinc-200 text-xs focus:outline-none">
+                        className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-zinc-200 text-xs">
                         {POPULAR_OLLAMA_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
                       </select>
                       <button onClick={pullModel} disabled={pulling}
@@ -299,43 +406,21 @@ function App() {
               </div>
             )}
 
-            {/* vLLM info */}
+            {/* vLLM quick start */}
             {provider === "vllm" && (
               <div className="p-3 bg-zinc-900 rounded text-xs text-zinc-500 space-y-1">
-                <p className="text-zinc-300">vLLM quick start</p>
-                <code className="block bg-zinc-800 px-2 py-1 rounded text-zinc-400">pip install vllm</code>
-                <code className="block bg-zinc-800 px-2 py-1 rounded text-zinc-400">vllm serve meta-llama/Llama-3.2-3B-Instruct</code>
-                <p>Then click Check above to detect it.</p>
+                <p className="text-zinc-300">Start a vLLM server</p>
+                <code className="block bg-zinc-800 px-2 py-1 rounded">pip install vllm</code>
+                <code className="block bg-zinc-800 px-2 py-1 rounded">vllm serve &lt;model-name&gt;</code>
               </div>
             )}
 
-            <div className="space-y-1">
-              <label className="text-xs text-zinc-500 uppercase tracking-wider">Raw JSON</label>
-              <textarea value={configText} onChange={(e) => setConfigText(e.target.value)} rows={7}
-                className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs font-mono focus:outline-none focus:border-orange-500 resize-none" />
+            <div className="flex items-center gap-3 pt-1">
+              <button onClick={saveConfig} className="flex-1 py-2 rounded text-xs bg-orange-500 text-white hover:bg-orange-600 font-medium">
+                Save and continue →
+              </button>
             </div>
-            <div className="flex items-center gap-3">
-              <button onClick={saveConfig} className="px-4 py-1.5 rounded text-xs bg-orange-500 text-white hover:bg-orange-600">Save config</button>
-              {saveMsg && <span className="text-xs text-zinc-400">{saveMsg}</span>}
-            </div>
-          </div>
-        )}
-
-        {/* SETUP */}
-        {tab === "setup" && (
-          <div className="space-y-4 text-xs text-zinc-400">
-            <p className="text-zinc-200 font-semibold">Getting started</p>
-            <ol className="space-y-3 list-decimal list-inside">
-              <li>Install OpenClaw: <code className="bg-zinc-800 px-1 rounded">npm i -g openclaw</code></li>
-              <li>Choose a provider in <button onClick={() => setTab("config")} className="text-orange-400 underline">Config</button></li>
-              <li>Run openclaw doctor from <button onClick={() => setTab("status")} className="text-orange-400 underline">Status</button></li>
-              <li>Hit <span className="text-green-400">Start</span></li>
-            </ol>
-            <div className="p-3 bg-zinc-900 rounded space-y-2">
-              <p className="text-zinc-300">Free local options</p>
-              <p><span className="text-orange-400">Ollama</span> — easiest, just install and pull a model</p>
-              <p><span className="text-orange-400">vLLM</span> — faster inference, needs a GPU, more control</p>
-            </div>
+            {saveMsg && <p className="text-xs text-zinc-400">{saveMsg}</p>}
           </div>
         )}
       </div>

@@ -120,6 +120,51 @@ fn vllm_list_models(base_url: String) -> Vec<String> {
     }
 }
 
+/// Install openclaw via npm (no terminal needed)
+#[tauri::command]
+fn install_openclaw() -> Result<String, String> {
+    // Find npm in common locations
+    let npm = ["npm", "/usr/local/bin/npm", "/opt/homebrew/bin/npm"]
+        .iter()
+        .find(|p| which::which(p).is_ok() || std::path::Path::new(p).exists())
+        .copied()
+        .ok_or("npm not found — install Node.js from nodejs.org")?;
+
+    let output = Command::new(npm)
+        .args(["install", "-g", "openclaw"])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok("OpenClaw installed successfully.".to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+/// Install Ollama on macOS via curl | sh (no terminal needed)
+#[tauri::command]
+fn install_ollama() -> Result<String, String> {
+    // On macOS, Ollama has a .app installer — open the download page
+    let output = Command::new("open")
+        .args(["https://ollama.ai/download"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok("Opened ollama.ai/download in your browser.".to_string())
+    } else {
+        Err("Could not open browser.".to_string())
+    }
+}
+
+/// Check if Node.js / npm is available
+#[tauri::command]
+fn node_installed() -> bool {
+    which::which("node").is_ok()
+        || std::path::Path::new("/usr/local/bin/node").exists()
+        || std::path::Path::new("/opt/homebrew/bin/node").exists()
+}
+
 #[tauri::command]
 fn openclaw_start() -> Result<(), String> {
     Command::new("openclaw")
@@ -155,6 +200,9 @@ pub fn run() {
             ollama_pull,
             vllm_check,
             vllm_list_models,
+            install_openclaw,
+            install_ollama,
+            node_installed,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
