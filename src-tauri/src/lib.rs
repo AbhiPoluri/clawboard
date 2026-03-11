@@ -81,6 +81,46 @@ fn ollama_pull(model: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn vllm_check(base_url: String) -> bool {
+    // Try hitting /v1/models — standard OpenAI-compatible endpoint
+    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+    let output = Command::new("curl")
+        .args(["-sf", "--max-time", "2", &url])
+        .output();
+    match output {
+        Ok(o) => o.status.success(),
+        Err(_) => false,
+    }
+}
+
+#[tauri::command]
+fn vllm_list_models(base_url: String) -> Vec<String> {
+    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+    let output = Command::new("curl")
+        .args(["-sf", "--max-time", "3", &url])
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout).to_string();
+            // Parse {"data": [{"id": "model-name"}, ...]}
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                val["data"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v["id"].as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            }
+        }
+        _ => vec![],
+    }
+}
+
+#[tauri::command]
 fn openclaw_start() -> Result<(), String> {
     Command::new("openclaw")
         .args(["start"])
@@ -113,6 +153,8 @@ pub fn run() {
             ollama_installed,
             ollama_list_models,
             ollama_pull,
+            vllm_check,
+            vllm_list_models,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
