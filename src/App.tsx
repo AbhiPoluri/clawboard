@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { CommandPalette } from "./components/CommandPalette";
 import "./index.css";
 import { AnalyticsTab } from "./components/AnalyticsTab";
 
@@ -135,6 +136,9 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastIdRef = useRef(0);
 
+  // Command palette
+  const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
+
   // Agent uptime
   const [agentStartTime, setAgentStartTime] = useState<number | null>(null);
   const [uptime, setUptime] = useState("");
@@ -175,6 +179,12 @@ export default function App() {
   // Keyboard shortcuts
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
+      if (!e.metaKey && !e.ctrlKey) return;
+      if ((e.key === "k" || e.key === "K") && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setCmdPaletteOpen((prev) => !prev);
+        return;
+      }
       if (!e.metaKey) return;
       if (e.key === "1") { e.preventDefault(); setTab("status"); }
       else if (e.key === "2") { e.preventDefault(); setTab("channels"); }
@@ -333,6 +343,38 @@ export default function App() {
       const parsed: HistoryEntry[] = JSON.parse(raw);
       setHistory(parsed.slice().reverse());
     } catch { setHistory([]); }
+  }
+
+  async function startAgent() {
+    try {
+      await invoke("openclaw_start");
+      showToast("Agent started", "success");
+    } catch (e) { showToast(`Error: ${e}`, "error"); }
+    setTimeout(checkStatus, 800);
+  }
+
+  async function stopAgent() {
+    try {
+      await invoke("openclaw_stop");
+      showToast("Agent stopped", "info");
+    } catch (e) { showToast(`Error: ${e}`, "error"); }
+    setTimeout(checkStatus, 800);
+  }
+
+  async function runDiagnostics() {
+    const o: string = await invoke("openclaw_doctor");
+    setDoctorOutput(o);
+    setTab("status");
+    showToast("Diagnostics complete", "info");
+  }
+
+  async function exportLogs() {
+    try {
+      await invoke("save_logs", { content: logs.join("\n") });
+      showToast("Logs exported", "success");
+    } catch (e) {
+      if (String(e) !== "Cancelled") showToast(`Export failed: ${e}`, "error");
+    }
   }
 
   async function clearHistoryData() {
@@ -1183,6 +1225,25 @@ export default function App() {
         })()}
 
       </div>
+
+      <CommandPalette
+        open={cmdPaletteOpen}
+        onClose={() => setCmdPaletteOpen(false)}
+        onNavigate={(t) => {
+          setTab(t);
+          if (t === "logs") startStreaming();
+          if (t === "persona") loadPersona();
+          if (t === "history") loadHistory();
+        }}
+        onStartAgent={startAgent}
+        onStopAgent={stopAgent}
+        onRunDiagnostics={runDiagnostics}
+        onExportSettings={exportSettings}
+        onImportSettings={() => importFileRef.current?.click()}
+        onStartLogStreaming={() => { setTab("logs"); startStreaming(); }}
+        onStopLogStreaming={() => setStreaming(false)}
+        onExportLogs={exportLogs}
+      />
     </div>
   );
 }
