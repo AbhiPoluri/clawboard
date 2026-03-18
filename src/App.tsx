@@ -8,7 +8,7 @@ type Provider = "anthropic" | "openai" | "ollama" | "vllm";
 type Step = "check" | "install_node" | "install_openclaw" | "config" | "ready";
 
 interface Config {
-  llm?: { provider?: string; api_key?: string; model?: string; base_url?: string };
+  llm?: { provider?: string; api_key?: string; model?: string; base_url?: string; temperature?: number; max_tokens?: number; top_p?: number };
   [key: string]: unknown;
 }
 
@@ -59,6 +59,8 @@ export default function App() {
   const [configText, setConfigText] = useState("{}");
   const [config, setConfig] = useState<Config>({});
   const [saveMsg, setSaveMsg] = useState("");
+  const [settingsMsg, setSettingsMsg] = useState("");
+  const importFileRef = useRef<HTMLInputElement>(null);
 
   // Channels
   const [channels, setChannels] = useState<ChannelStatus[]>([]);
@@ -93,6 +95,11 @@ export default function App() {
   const [vllmRunning, setVllmRunning] = useState(false);
   const [vllmModels, setVllmModels] = useState<string[]>([]);
   const [vllmChecking, setVllmChecking] = useState(false);
+
+  // Model parameters
+  const [temperature, setTemperature] = useState(0.7);
+  const [maxTokens, setMaxTokens] = useState(2048);
+  const [topP, setTopP] = useState(0.9);
 
   useEffect(() => { runChecks(); }, []);
 
@@ -129,6 +136,9 @@ export default function App() {
       const parsed = JSON.parse(raw);
       setConfig(parsed);
       if (parsed.llm?.base_url) setVllmBaseUrl(parsed.llm.base_url);
+      if (parsed.llm?.temperature !== undefined) setTemperature(parsed.llm.temperature);
+      if (parsed.llm?.max_tokens !== undefined) setMaxTokens(parsed.llm.max_tokens);
+      if (parsed.llm?.top_p !== undefined) setTopP(parsed.llm.top_p);
       if (parsed.llm?.provider) { setConfigOk(true); setStep("ready"); }
       else setStep("config");
     } catch { setStep("config"); }
@@ -142,6 +152,42 @@ export default function App() {
       setStep("ready");
       setTimeout(() => setSaveMsg(""), 2000);
     } catch (e) { setSaveMsg(`Error: ${e}`); }
+  }
+
+  async function exportSettings() {
+    try {
+      const json: string = await invoke("export_settings");
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "clawboard-settings.json";
+      a.click();
+      URL.revokeObjectURL(url);
+      setSettingsMsg("Exported.");
+    } catch (e) {
+      setSettingsMsg(`Error: ${e}`);
+    }
+    setTimeout(() => setSettingsMsg(""), 3000);
+  }
+
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const text = ev.target?.result as string;
+      try {
+        await invoke("import_settings", { data: text });
+        await loadConfig();
+        setSettingsMsg("Settings imported.");
+      } catch (err) {
+        setSettingsMsg(`Import failed: ${err}`);
+      }
+      setTimeout(() => setSettingsMsg(""), 4000);
+    };
+    reader.readAsText(file);
+    e.target.value = "";
   }
 
   async function loadChannels() {
@@ -257,6 +303,29 @@ export default function App() {
     try {
       const parsed: Config = JSON.parse(configText);
       if (patch.llm) parsed.llm = { ...parsed.llm, ...patch.llm };
+      const updated = JSON.stringify(parsed, null, 2);
+      setConfigText(updated);
+      setConfig(parsed);
+    } catch { /* ignore */ }
+  }
+
+  function updateLlmParam(key: string, value: number) {
+    try {
+      const parsed: Config = JSON.parse(configText);
+      parsed.llm = { ...parsed.llm, [key]: value };
+      const updated = JSON.stringify(parsed, null, 2);
+      setConfigText(updated);
+      setConfig(parsed);
+    } catch { /* ignore */ }
+  }
+
+  function resetModelParams() {
+    setTemperature(0.7);
+    setMaxTokens(2048);
+    setTopP(0.9);
+    try {
+      const parsed: Config = JSON.parse(configText);
+      parsed.llm = { ...parsed.llm, temperature: 0.7, max_tokens: 2048, top_p: 0.9 };
       const updated = JSON.stringify(parsed, null, 2);
       setConfigText(updated);
       setConfig(parsed);
@@ -662,6 +731,34 @@ export default function App() {
               Save and continue →
             </button>
             {saveMsg && <p className="text-xs text-zinc-400">{saveMsg}</p>}
+
+            {/* ── Import / Export ── */}
+            <div className="pt-2 border-t border-zinc-800 space-y-3">
+              <label className="text-xs text-zinc-500 uppercase tracking-wider">Import / Export</label>
+              <div className="flex gap-2">
+                <button
+                  onClick={exportSettings}
+                  className="flex-1 py-2 rounded text-xs bg-zinc-800 text-zinc-200 hover:bg-zinc-700 border border-zinc-700"
+                >
+                  Export Settings
+                </button>
+                <button
+                  onClick={() => importFileRef.current?.click()}
+                  className="flex-1 py-2 rounded text-xs bg-zinc-800 text-zinc-200 hover:bg-zinc-700 border border-zinc-700"
+                >
+                  Import Settings
+                </button>
+                <input
+                  ref={importFileRef}
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  onChange={handleImportFile}
+                />
+              </div>
+              <p className="text-xs text-amber-600">Importing settings will overwrite your current configuration.</p>
+              {settingsMsg && <p className="text-xs text-zinc-400">{settingsMsg}</p>}
+            </div>
           </div>
         )}
       </div>
