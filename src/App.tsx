@@ -628,6 +628,82 @@ export default function App() {
           );
         })()}
 
+
+        {/* ── PERSONA ── */}
+        {tab === "persona" && (
+          <div className="p-4 space-y-4">
+            <p className="text-xs text-zinc-500">Define your agent's personality and communication style.</p>
+
+            <div className="space-y-1">
+              <label className="text-xs text-zinc-500 uppercase tracking-wider">Persona Name</label>
+              <input
+                type="text"
+                value={personaName}
+                onChange={(e) => setPersonaName(e.target.value)}
+                placeholder="e.g. Friendly Assistant"
+                className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-emerald-500 placeholder:text-zinc-600"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs text-zinc-500 uppercase tracking-wider">System Prompt</label>
+              <textarea
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                placeholder="You are a helpful assistant..."
+                rows={6}
+                className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-emerald-500 placeholder:text-zinc-600 resize-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs text-zinc-500 uppercase tracking-wider">Tone</label>
+                <select
+                  value={tone}
+                  onChange={(e) => setTone(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-emerald-500"
+                >
+                  <option>Professional</option>
+                  <option>Casual</option>
+                  <option>Friendly</option>
+                  <option>Technical</option>
+                  <option>Concise</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs text-zinc-500 uppercase tracking-wider">Response Length</label>
+                <select
+                  value={responseLength}
+                  onChange={(e) => setResponseLength(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-emerald-500"
+                >
+                  <option>Brief</option>
+                  <option>Medium</option>
+                  <option>Detailed</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={savePersona}
+                className="flex-1 py-2.5 rounded text-xs bg-emerald-600 text-white hover:bg-emerald-500 font-medium"
+              >
+                Save Persona
+              </button>
+              <button
+                onClick={resetPersona}
+                className="px-4 py-2.5 rounded text-xs bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+              >
+                Reset to Default
+              </button>
+            </div>
+            {personaMsg && <p className="text-xs text-zinc-400">{personaMsg}</p>}
+          </div>
+        )}
+
         {/* ── CONFIG ── */}
         {tab === "config" && (
           <div className="p-4 space-y-4">
@@ -690,6 +766,58 @@ export default function App() {
                     placeholder={provider === "anthropic" ? "claude-sonnet-4-6" : "gpt-4o"}
                     className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-orange-500 placeholder:text-zinc-600" />
                 )}
+              </div>
+            </div>
+
+            {/* Model Parameters */}
+            <div className="p-3 bg-zinc-900 rounded space-y-4">
+              <div className="flex items-center justify-between">
+                <label className="text-xs text-zinc-500 uppercase tracking-wider">Model Parameters</label>
+                <button onClick={resetModelParams} className="text-xs text-emerald-500 hover:text-emerald-400">
+                  Reset defaults
+                </button>
+              </div>
+
+              {/* Temperature */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-zinc-400">Temperature</label>
+                  <span className="text-xs text-zinc-300 font-mono tabular-nums">{temperature.toFixed(1)}</span>
+                </div>
+                <input
+                  type="range" min="0" max="2" step="0.1" value={temperature}
+                  onChange={(e) => { const v = parseFloat(e.target.value); setTemperature(v); updateLlmParam("temperature", v); }}
+                  className="w-full h-1.5 rounded appearance-none bg-zinc-700 accent-emerald-500 cursor-pointer"
+                />
+                <p className="text-xs text-zinc-600">Controls randomness. Lower = more focused, higher = more creative</p>
+              </div>
+
+              {/* Max Tokens */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-zinc-400">Max Tokens</label>
+                  <span className="text-xs text-zinc-300 font-mono tabular-nums">{maxTokens}</span>
+                </div>
+                <input
+                  type="range" min="100" max="8192" step="100" value={maxTokens}
+                  onChange={(e) => { const v = parseInt(e.target.value); setMaxTokens(v); updateLlmParam("max_tokens", v); }}
+                  className="w-full h-1.5 rounded appearance-none bg-zinc-700 accent-emerald-500 cursor-pointer"
+                />
+                <p className="text-xs text-zinc-600">Maximum length of each response</p>
+              </div>
+
+              {/* Top-P */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-zinc-400">Top-P</label>
+                  <span className="text-xs text-zinc-300 font-mono tabular-nums">{topP.toFixed(2)}</span>
+                </div>
+                <input
+                  type="range" min="0" max="1" step="0.05" value={topP}
+                  onChange={(e) => { const v = parseFloat(e.target.value); setTopP(v); updateLlmParam("top_p", v); }}
+                  className="w-full h-1.5 rounded appearance-none bg-zinc-700 accent-emerald-500 cursor-pointer"
+                />
+                <p className="text-xs text-zinc-600">Nucleus sampling threshold. Lower = more focused vocabulary</p>
               </div>
             </div>
 
