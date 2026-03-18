@@ -1,4 +1,4 @@
-export type Tab = "status" | "channels" | "config" | "persona" | "logs";
+export type Tab = "status" | "channels" | "config" | "persona" | "history" | "logs";
 export type Provider = "anthropic" | "openai" | "ollama" | "vllm";
 export type Step = "check" | "install_node" | "install_openclaw" | "config" | "ready";
 export type LogFilter = "all" | "error" | "warn" | "info";
