@@ -396,6 +396,70 @@ async fn save_logs(content: String) -> Result<String, String> {
     }
 }
 
+// ── Channel test ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn test_channel(channel: String) -> bool {
+    match channel.as_str() {
+        "imessage" => {
+            std::path::Path::new("/System/Applications/Messages.app").exists()
+                || std::path::Path::new("/Applications/Messages.app").exists()
+        }
+        name => {
+            let config_str = read_config().unwrap_or_default();
+            let config: serde_json::Value =
+                serde_json::from_str(&config_str).unwrap_or_default();
+            let token = config
+                .get("channels")
+                .and_then(|c| c.get(name))
+                .and_then(|v| v.get("token"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if token.is_empty() {
+                return false;
+            }
+
+            match name {
+                "telegram" => {
+                    let url = format!("https://api.telegram.org/bot{}/getMe", token);
+                    Command::new("curl")
+                        .args(["-sf", "--max-time", "5", &url])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                }
+                "discord" => Command::new("curl")
+                    .args([
+                        "-sf",
+                        "--max-time",
+                        "5",
+                        "-H",
+                        &format!("Authorization: Bot {}", token),
+                        "https://discord.com/api/v10/users/@me",
+                    ])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false),
+                "slack" => Command::new("curl")
+                    .args([
+                        "-sf",
+                        "--max-time",
+                        "5",
+                        "-H",
+                        &format!("Authorization: Bearer {}", token),
+                        "https://slack.com/api/auth.test",
+                    ])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false),
+                _ => !token.is_empty(),
+            }
+        }
+    }
+}
+
 // ── Install helpers ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -461,6 +525,7 @@ pub fn run() {
             node_installed,
             install_openclaw,
             install_ollama,
+            test_channel,
             save_logs,
             read_persona,
             write_persona,

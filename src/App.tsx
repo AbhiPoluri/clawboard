@@ -3,22 +3,49 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./index.css";
 
-import { Tab, Step, Config, ChannelStatus, Provider, LogFilter } from "./types";
-import { Dot } from "./components/Dot";
-import { TabBar } from "./components/TabBar";
-import { StatusTab } from "./components/StatusTab";
-import { ChannelsTab } from "./components/ChannelsTab";
-import { LogsTab } from "./components/LogsTab";
-import { ConfigTab } from "./components/ConfigTab";
-import { PersonaTab } from "./components/PersonaTab";
+type Tab = "status" | "channels" | "logs" | "config";
+type Provider = "anthropic" | "openai" | "ollama" | "vllm";
+type Step = "check" | "install_node" | "install_openclaw" | "config" | "ready";
+type ToastType = "success" | "error" | "info";
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "status", label: "Status" },
-  { id: "channels", label: "Channels" },
-  { id: "config", label: "Config" },
-  { id: "persona", label: "Persona" },
-  { id: "logs", label: "Logs" },
-];
+interface Toast {
+  id: number;
+  message: string;
+  type: ToastType;
+}
+
+interface Config {
+  llm?: { provider?: string; api_key?: string; model?: string; base_url?: string };
+  [key: string]: unknown;
+}
+
+interface ChannelStatus {
+  name: string;
+  connected: boolean;
+  description: string;
+}
+
+const CHANNEL_ICONS: Record<string, string> = {
+  imessage: "💬", whatsapp: "🟢", telegram: "✈️", discord: "🎮", slack: "⚡"
+};
+
+const CHANNEL_SETUP: Record<string, { label: string; placeholder: string; url?: string; note?: string }> = {
+  imessage: { label: "No token needed", placeholder: "", note: "Requires macOS — enabled automatically when openclaw runs." },
+  whatsapp: { label: "WhatsApp token", placeholder: "Paste token from openclaw whatsapp:setup", url: "https://docs.openclaw.ai/channels/whatsapp" },
+  telegram: { label: "Bot token", placeholder: "123456:ABC-DEF...", url: "https://t.me/botfather", note: "Create a bot with @BotFather, paste the token." },
+  discord: { label: "Bot token", placeholder: "MTA0...", url: "https://discord.com/developers/applications", note: "Create a bot in Discord Dev Portal, copy Bot Token." },
+  slack: { label: "Bot token", placeholder: "xoxb-...", url: "https://api.slack.com/apps", note: "Create a Slack app, install to workspace, copy Bot User OAuth Token." },
+};
+
+const POPULAR_OLLAMA_MODELS = ["llama3.2", "llama3.1", "mistral", "phi4", "gemma3", "qwen2.5", "deepseek-r1"];
+
+function Dot({ ok, pulse }: { ok: boolean; pulse?: boolean }) {
+  return <div className={`w-2 h-2 rounded-full flex-shrink-0 ${ok ? "bg-green-400" : "bg-zinc-600"} ${pulse && ok ? "animate-pulse" : ""}`} />;
+}
+
+function Badge({ ok }: { ok: boolean }) {
+  return <span className={`text-xs px-1.5 py-0.5 rounded ${ok ? "bg-green-900 text-green-300" : "bg-zinc-800 text-zinc-500"}`}>{ok ? "connected" : "off"}</span>;
+}
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("status");
@@ -39,29 +66,18 @@ export default function App() {
   const [configText, setConfigText] = useState("{}");
   const [config, setConfig] = useState<Config>({});
   const [saveMsg, setSaveMsg] = useState("");
-  const [settingsMsg, setSettingsMsg] = useState("");
-  const importFileRef = useRef<HTMLInputElement>(null);
 
   // Channels
   const [channels, setChannels] = useState<ChannelStatus[]>([]);
   const [expandedChannel, setExpandedChannel] = useState<string | null>(null);
   const [channelTokens, setChannelTokens] = useState<Record<string, string>>({});
   const [channelMsg, setChannelMsg] = useState<Record<string, string>>({});
-
-  // Persona
-  const [personaName, setPersonaName] = useState("");
-  const [systemPrompt, setSystemPrompt] = useState("");
-  const [tone, setTone] = useState("Professional");
-  const [responseLength, setResponseLength] = useState("Medium");
-  const [personaMsg, setPersonaMsg] = useState("");
+  const [channelTesting, setChannelTesting] = useState<Record<string, "idle" | "testing" | "ok" | "fail">>({});
 
   // Logs
   const [logs, setLogs] = useState<string[]>([]);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const [streaming, setStreaming] = useState(false);
-  const [logSearch, setLogSearch] = useState("");
-  const [logFilter, setLogFilter] = useState<LogFilter>("all");
-  const [exportMsg, setExportMsg] = useState("");
 
   // Ollama
   const [ollamaOk, setOllamaOk] = useState(false);
@@ -76,15 +92,61 @@ export default function App() {
   const [vllmModels, setVllmModels] = useState<string[]>([]);
   const [vllmChecking, setVllmChecking] = useState(false);
 
-  // Model parameters
-  const [temperature, setTemperature] = useState(0.7);
-  const [maxTokens, setMaxTokens] = useState(2048);
-  const [topP, setTopP] = useState(0.9);
+  // Toasts
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastIdRef = useRef(0);
+
+  // Agent uptime
+  const [agentStartTime, setAgentStartTime] = useState<number | null>(null);
+  const [uptime, setUptime] = useState("");
+
+  function showToast(message: string, type: ToastType = "info") {
+    const id = ++toastIdRef.current;
+    setToasts((prev) => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3000);
+  }
+
+  // Track agent start time
+  useEffect(() => {
+    if (running && agentStartTime === null) {
+      setAgentStartTime(Date.now());
+    } else if (!running) {
+      setAgentStartTime(null);
+      setUptime("");
+    }
+  }, [running]);
+
+  // Uptime ticker
+  useEffect(() => {
+    if (!agentStartTime) return;
+    const interval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - agentStartTime) / 1000);
+      const m = Math.floor(elapsed / 60);
+      const s = elapsed % 60;
+      setUptime(m > 0 ? `${m}m ${s}s` : `${s}s`);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [agentStartTime]);
 
   useEffect(() => { runChecks(); }, []);
 
   // Auto-scroll logs
   useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [logs]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (!e.metaKey) return;
+      if (e.key === "1") { e.preventDefault(); setTab("status"); }
+      else if (e.key === "2") { e.preventDefault(); setTab("channels"); }
+      else if (e.key === "3") { e.preventDefault(); setTab("logs"); startStreaming(); }
+      else if (e.key === "4") { e.preventDefault(); setTab("config"); }
+      else if (e.key === "l" || e.key === "L") { e.preventDefault(); setTab("logs"); startStreaming(); }
+      else if (e.key === ",") { e.preventDefault(); setTab("config"); }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [streaming]);
 
   async function runChecks() {
     setStep("check");
@@ -116,9 +178,6 @@ export default function App() {
       const parsed = JSON.parse(raw);
       setConfig(parsed);
       if (parsed.llm?.base_url) setVllmBaseUrl(parsed.llm.base_url);
-      if (parsed.llm?.temperature !== undefined) setTemperature(parsed.llm.temperature);
-      if (parsed.llm?.max_tokens !== undefined) setMaxTokens(parsed.llm.max_tokens);
-      if (parsed.llm?.top_p !== undefined) setTopP(parsed.llm.top_p);
       if (parsed.llm?.provider) { setConfigOk(true); setStep("ready"); }
       else setStep("config");
     } catch { setStep("config"); }
@@ -130,44 +189,12 @@ export default function App() {
       setSaveMsg("Saved.");
       setConfigOk(true);
       setStep("ready");
+      showToast("Config saved", "success");
       setTimeout(() => setSaveMsg(""), 2000);
-    } catch (e) { setSaveMsg(`Error: ${e}`); }
-  }
-
-  async function exportSettings() {
-    try {
-      const json: string = await invoke("export_settings");
-      const blob = new Blob([json], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "clawboard-settings.json";
-      a.click();
-      URL.revokeObjectURL(url);
-      setSettingsMsg("Exported.");
     } catch (e) {
-      setSettingsMsg(`Error: ${e}`);
+      setSaveMsg(`Error: ${e}`);
+      showToast(`Save failed: ${e}`, "error");
     }
-    setTimeout(() => setSettingsMsg(""), 3000);
-  }
-
-  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      const text = ev.target?.result as string;
-      try {
-        await invoke("import_settings", { data: text });
-        await loadConfig();
-        setSettingsMsg("Settings imported.");
-      } catch (err) {
-        setSettingsMsg(`Import failed: ${err}`);
-      }
-      setTimeout(() => setSettingsMsg(""), 4000);
-    };
-    reader.readAsText(file);
-    e.target.value = "";
   }
 
   async function loadChannels() {
@@ -177,10 +204,22 @@ export default function App() {
 
   async function toggleChannel(ch: ChannelStatus) {
     if (ch.connected) {
-      await invoke("disable_channel", { channel: ch.name });
+      try {
+        await invoke("disable_channel", { channel: ch.name });
+        showToast(`${ch.name} disabled`, "info");
+      } catch (e) {
+        showToast(`Failed to disable ${ch.name}: ${e}`, "error");
+        return;
+      }
     } else {
       if (ch.name === "imessage") {
-        await invoke("enable_channel", { channel: ch.name, token: "" });
+        try {
+          await invoke("enable_channel", { channel: ch.name, token: "" });
+          showToast("iMessage enabled", "success");
+        } catch (e) {
+          showToast(`Failed to enable iMessage: ${e}`, "error");
+          return;
+        }
       } else {
         setExpandedChannel(expandedChannel === ch.name ? null : ch.name);
         return;
@@ -195,11 +234,26 @@ export default function App() {
       await invoke("enable_channel", { channel: name, token });
       setChannelMsg({ ...channelMsg, [name]: "Connected!" });
       setExpandedChannel(null);
+      showToast(`${name} connected`, "success");
       await loadChannels();
     } catch (e) {
       setChannelMsg({ ...channelMsg, [name]: `Error: ${e}` });
+      showToast(`Failed to connect ${name}: ${e}`, "error");
     }
     setTimeout(() => setChannelMsg((m) => ({ ...m, [name]: "" })), 3000);
+  }
+
+  async function testChannel(name: string) {
+    setChannelTesting((prev) => ({ ...prev, [name]: "testing" }));
+    try {
+      const ok: boolean = await invoke("test_channel", { channel: name });
+      setChannelTesting((prev) => ({ ...prev, [name]: ok ? "ok" : "fail" }));
+      showToast(ok ? `${name} — connection OK` : `${name} — connection failed`, ok ? "success" : "error");
+    } catch (e) {
+      setChannelTesting((prev) => ({ ...prev, [name]: "fail" }));
+      showToast(`${name} test error: ${e}`, "error");
+    }
+    setTimeout(() => setChannelTesting((prev) => ({ ...prev, [name]: "idle" })), 3000);
   }
 
   async function startStreaming() {
@@ -221,7 +275,11 @@ export default function App() {
       setInstallMsg(msg);
       setClawOk(true);
       setStep("config");
-    } catch (e) { setInstallMsg(`Failed: ${e}`); }
+      showToast("OpenClaw installed", "success");
+    } catch (e) {
+      setInstallMsg(`Failed: ${e}`);
+      showToast(`Install failed: ${e}`, "error");
+    }
     setInstalling(false);
   }
 
@@ -243,7 +301,11 @@ export default function App() {
       const models: string[] = await invoke("ollama_list_models");
       setOllamaModels(models);
       updateConfigFields({ llm: { provider: "ollama", model: pullTarget, api_key: "" } });
-    } catch (e) { setPullMsg(`Error: ${e}`); }
+      showToast(`${pullTarget} pulled`, "success");
+    } catch (e) {
+      setPullMsg(`Error: ${e}`);
+      showToast(`Pull failed: ${e}`, "error");
+    }
     setPulling(false);
   }
 
@@ -289,93 +351,30 @@ export default function App() {
     } catch { /* ignore */ }
   }
 
-  function updateLlmParam(key: string, value: number) {
-    try {
-      const parsed: Config = JSON.parse(configText);
-      parsed.llm = { ...parsed.llm, [key]: value };
-      const updated = JSON.stringify(parsed, null, 2);
-      setConfigText(updated);
-      setConfig(parsed);
-    } catch { /* ignore */ }
-  }
-
-  function resetModelParams() {
-    setTemperature(0.7);
-    setMaxTokens(2048);
-    setTopP(0.9);
-    try {
-      const parsed: Config = JSON.parse(configText);
-      parsed.llm = { ...parsed.llm, temperature: 0.7, max_tokens: 2048, top_p: 0.9 };
-      const updated = JSON.stringify(parsed, null, 2);
-      setConfigText(updated);
-      setConfig(parsed);
-    } catch { /* ignore */ }
-  }
-
-  async function loadPersona() {
-    try {
-      const raw: string = await invoke("read_persona");
-      const parsed = JSON.parse(raw);
-      if (parsed.name) setPersonaName(parsed.name);
-      if (parsed.system_prompt) setSystemPrompt(parsed.system_prompt);
-      if (parsed.tone) setTone(parsed.tone);
-      if (parsed.response_length) setResponseLength(parsed.response_length);
-    } catch { /* use defaults */ }
-  }
-
-  async function savePersona() {
-    try {
-      const payload = JSON.stringify({ name: personaName, system_prompt: systemPrompt, tone, response_length: responseLength }, null, 2);
-      await invoke("write_persona", { persona: payload });
-      setPersonaMsg("Saved.");
-      setTimeout(() => setPersonaMsg(""), 2000);
-    } catch (e) { setPersonaMsg(`Error: ${e}`); }
-  }
-
-  function resetPersona() {
-    setPersonaName("");
-    setSystemPrompt("");
-    setTone("Professional");
-    setResponseLength("Medium");
-    setPersonaMsg("");
-  }
-
-  async function handleToggleAgent() {
-    if (running) await invoke("openclaw_stop");
-    else await invoke("openclaw_start");
-    setTimeout(checkStatus, 800);
-  }
-
-  async function handleDiagnostics() {
-    const o: string = await invoke("openclaw_doctor");
-    setDoctorOutput(o);
-  }
-
-  async function handleExportLogs(content: string) {
-    try {
-      setExportMsg("");
-      await invoke("save_logs", { content });
-      setExportMsg("Saved.");
-    } catch (e) {
-      if (String(e) !== "Cancelled") setExportMsg(`Error: ${e}`);
-    }
-    setTimeout(() => setExportMsg(""), 3000);
-  }
-
-  function handleTabChange(newTab: Tab) {
-    setTab(newTab);
-    if (newTab === "logs") startStreaming();
-    if (newTab === "persona") loadPersona();
-  }
-
-  // Suppress unused warnings for model params (no UI yet)
-  void [temperature, maxTokens, topP, updateLlmParam, resetModelParams];
-  void [personaName, systemPrompt, tone, responseLength, personaMsg,
-        setPersonaName, setSystemPrompt, setTone, setResponseLength,
-        savePersona, resetPersona];
+  const tabs: { id: Tab; label: string; shortcut: string }[] = [
+    { id: "status", label: "Status", shortcut: "⌘1" },
+    { id: "channels", label: "Channels", shortcut: "⌘2" },
+    { id: "logs", label: "Logs", shortcut: "⌘3" },
+    { id: "config", label: "Config", shortcut: "⌘4" },
+  ];
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-mono text-sm flex flex-col select-none">
+      {/* Toast container */}
+      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className={`px-3 py-2 rounded text-xs font-mono shadow-lg border pointer-events-auto
+              ${t.type === "success" ? "bg-green-950 text-green-300 border-green-800"
+              : t.type === "error" ? "bg-red-950 text-red-300 border-red-800"
+              : "bg-blue-950 text-blue-300 border-blue-800"}`}
+          >
+            {t.message}
+          </div>
+        ))}
+      </div>
+
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-zinc-800 bg-zinc-950">
         <span>🦞</span>
@@ -386,83 +385,330 @@ export default function App() {
         </div>
       </div>
 
-      <TabBar tabs={TABS} activeTab={tab} onTabChange={handleTabChange} />
+      {/* Tabs */}
+      <div className="flex border-b border-zinc-800">
+        {tabs.map(({ id, label, shortcut }) => (
+          <button key={id} onClick={() => { setTab(id); if (id === "logs") startStreaming(); }}
+            className={`flex-1 py-2 text-xs transition-colors group relative ${tab === id ? "text-orange-400 border-b-2 border-orange-500" : "text-zinc-500 hover:text-zinc-300"}`}>
+            {label}
+            <span className="hidden group-hover:block absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-1.5 py-0.5 bg-zinc-800 text-zinc-400 text-xs rounded whitespace-nowrap pointer-events-none">
+              {shortcut}
+            </span>
+          </button>
+        ))}
+      </div>
 
       <div className="flex-1 overflow-auto">
+
+        {/* STATUS */}
         {tab === "status" && (
-          <StatusTab
-            step={step}
-            nodeOk={nodeOk}
-            clawOk={clawOk}
-            configOk={configOk}
-            channels={channels}
-            running={running}
-            installing={installing}
-            installMsg={installMsg}
-            doctorOutput={doctorOutput}
-            onRunChecks={runChecks}
-            onInstallOpenclaw={installOpenclaw}
-            onToggleAgent={handleToggleAgent}
-            onCheckStatus={checkStatus}
-            onDiagnostics={handleDiagnostics}
-            onGoToConfig={() => setTab("config")}
-          />
+          <div className="p-4 space-y-4">
+            {step === "check" && <p className="text-xs text-zinc-500 animate-pulse">Checking setup...</p>}
+
+            {step === "install_node" && (
+              <div className="space-y-3">
+                <p className="text-zinc-200 font-semibold text-xs">Step 1 — Install Node.js</p>
+                <p className="text-xs text-zinc-500">Required to install OpenClaw.</p>
+                <button onClick={() => { invoke("install_ollama"); window.open("https://nodejs.org/en/download"); }}
+                  className="w-full py-2 rounded text-xs bg-orange-500 text-white hover:bg-orange-600">
+                  Open nodejs.org →
+                </button>
+                <button onClick={runChecks} className="w-full py-2 rounded text-xs bg-zinc-800 text-zinc-300 hover:bg-zinc-700">
+                  I installed it — retry
+                </button>
+              </div>
+            )}
+
+            {step === "install_openclaw" && (
+              <div className="space-y-3">
+                <p className="text-zinc-200 font-semibold text-xs">Step 2 — Install OpenClaw</p>
+                <button onClick={installOpenclaw} disabled={installing}
+                  className="w-full py-2.5 rounded text-xs bg-orange-500 text-white hover:bg-orange-600 disabled:opacity-50">
+                  {installing ? "Installing..." : "Install OpenClaw"}
+                </button>
+                {installMsg && <p className="text-xs text-zinc-400">{installMsg}</p>}
+              </div>
+            )}
+
+            {step === "config" && (
+              <div className="space-y-3">
+                <p className="text-zinc-200 font-semibold text-xs">Step 3 — Connect AI</p>
+                <p className="text-xs text-zinc-500">Choose a model provider to activate your agent.</p>
+                <button onClick={() => setTab("config")}
+                  className="w-full py-2.5 rounded text-xs bg-orange-500 text-white hover:bg-orange-600">
+                  Set up AI provider →
+                </button>
+              </div>
+            )}
+
+            {step === "ready" && (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  {[
+                    { label: "Node.js", ok: !!nodeOk },
+                    { label: "OpenClaw", ok: !!clawOk },
+                    { label: "AI provider", ok: configOk },
+                    { label: "Channels", ok: channels.some((c) => c.connected) },
+                  ].map(({ label, ok }) => (
+                    <div key={label} className="flex items-center gap-3">
+                      <Dot ok={ok} />
+                      <span className="text-xs text-zinc-400 flex-1">{label}</span>
+                      {ok && <span className="text-xs text-green-500">✓</span>}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Agent toggle with uptime */}
+                <div className="p-3 bg-zinc-900 rounded flex items-center gap-3">
+                  <Dot ok={running} pulse />
+                  <div className="flex-1 min-w-0">
+                    <span className="text-xs text-zinc-300">Agent {running ? "running" : "stopped"}</span>
+                    {running && uptime && (
+                      <span className="ml-2 text-xs text-zinc-500">{uptime}</span>
+                    )}
+                  </div>
+                  <button onClick={async () => {
+                    try {
+                      if (running) {
+                        await invoke("openclaw_stop");
+                        showToast("Agent stopped", "info");
+                      } else {
+                        await invoke("openclaw_start");
+                        showToast("Agent started", "success");
+                      }
+                    } catch (e) {
+                      showToast(`Error: ${e}`, "error");
+                    }
+                    setTimeout(checkStatus, 800);
+                  }}
+                    className={`px-4 py-1.5 rounded text-xs font-medium ${running ? "bg-red-900 text-red-300 hover:bg-red-800" : "bg-green-900 text-green-300 hover:bg-green-800"}`}>
+                    {running ? "Stop" : "Start"}
+                  </button>
+                </div>
+
+                <div className="flex gap-2">
+                  <button onClick={checkStatus} className="flex-1 py-1.5 rounded text-xs bg-zinc-800 text-zinc-400 hover:bg-zinc-700">Refresh</button>
+                  <button onClick={async () => { const o: string = await invoke("openclaw_doctor"); setDoctorOutput(o); }}
+                    className="flex-1 py-1.5 rounded text-xs bg-zinc-800 text-zinc-400 hover:bg-zinc-700">
+                    Diagnostics
+                  </button>
+                </div>
+                {doctorOutput && (
+                  <pre className="p-3 bg-zinc-900 rounded text-xs text-zinc-400 whitespace-pre-wrap max-h-48 overflow-auto">{doctorOutput}</pre>
+                )}
+              </div>
+            )}
+          </div>
         )}
+
+        {/* CHANNELS */}
         {tab === "channels" && (
-          <ChannelsTab
-            channels={channels}
-            expandedChannel={expandedChannel}
-            channelTokens={channelTokens}
-            channelMsg={channelMsg}
-            onToggleChannel={toggleChannel}
-            onConnectChannel={connectChannel}
-            onLoadChannels={loadChannels}
-            onSetChannelTokens={setChannelTokens}
-          />
+          <div className="p-4 space-y-2">
+            <p className="text-xs text-zinc-500 mb-3">Connect messaging platforms to your agent.</p>
+            {channels.map((ch) => {
+              const setup = CHANNEL_SETUP[ch.name];
+              const isExpanded = expandedChannel === ch.name;
+              const testState = channelTesting[ch.name] ?? "idle";
+              return (
+                <div key={ch.name} className="bg-zinc-900 rounded overflow-hidden">
+                  <div className="flex items-center gap-3 p-3">
+                    <span className="text-base">{CHANNEL_ICONS[ch.name]}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-zinc-200 capitalize">{ch.name}</p>
+                      <p className="text-xs text-zinc-500 truncate">{ch.description}</p>
+                    </div>
+                    <Badge ok={ch.connected} />
+                    {/* Test button */}
+                    <button
+                      onClick={() => testChannel(ch.name)}
+                      disabled={testState === "testing"}
+                      title="Test connection"
+                      className="ml-1 px-2 py-1 rounded text-xs bg-zinc-800 text-zinc-400 hover:bg-zinc-700 disabled:opacity-50 w-10 text-center"
+                    >
+                      {testState === "testing" ? (
+                        <span className="inline-block animate-spin">⟳</span>
+                      ) : testState === "ok" ? (
+                        <span className="text-green-400">✓</span>
+                      ) : testState === "fail" ? (
+                        <span className="text-red-400">✗</span>
+                      ) : (
+                        "Test"
+                      )}
+                    </button>
+                    <button onClick={() => toggleChannel(ch)}
+                      className={`ml-1 px-2.5 py-1 rounded text-xs ${ch.connected ? "bg-zinc-700 text-zinc-300 hover:bg-zinc-600" : "bg-orange-500 text-white hover:bg-orange-600"}`}>
+                      {ch.connected ? "Disconnect" : "Connect"}
+                    </button>
+                  </div>
+
+                  {isExpanded && setup && (
+                    <div className="px-3 pb-3 border-t border-zinc-800 pt-3 space-y-2">
+                      {setup.note && <p className="text-xs text-zinc-500">{setup.note}</p>}
+                      {setup.url && (
+                        <a href={setup.url} target="_blank" rel="noreferrer"
+                          className="text-xs text-orange-400 hover:underline block">
+                          {setup.url} ↗
+                        </a>
+                      )}
+                      {ch.name !== "imessage" && (
+                        <>
+                          <input
+                            type="password"
+                            placeholder={setup.placeholder}
+                            value={channelTokens[ch.name] ?? ""}
+                            onChange={(e) => setChannelTokens({ ...channelTokens, [ch.name]: e.target.value })}
+                            className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-orange-500 placeholder:text-zinc-600"
+                          />
+                          <button onClick={() => connectChannel(ch.name)}
+                            className="w-full py-1.5 rounded text-xs bg-orange-500 text-white hover:bg-orange-600">
+                            Connect
+                          </button>
+                        </>
+                      )}
+                      {channelMsg[ch.name] && <p className="text-xs text-zinc-400">{channelMsg[ch.name]}</p>}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <button onClick={loadChannels} className="mt-2 text-xs text-zinc-500 hover:text-zinc-300">Refresh</button>
+          </div>
         )}
-        {tab === "config" && (
-          <ConfigTab
-            config={config}
-            provider={provider}
-            apiKey={apiKey}
-            model={model}
-            saveMsg={saveMsg}
-            settingsMsg={settingsMsg}
-            importFileRef={importFileRef}
-            ollamaOk={ollamaOk}
-            ollamaModels={ollamaModels}
-            pullTarget={pullTarget}
-            pullMsg={pullMsg}
-            pulling={pulling}
-            vllmBaseUrl={vllmBaseUrl}
-            vllmRunning={vllmRunning}
-            vllmModels={vllmModels}
-            vllmChecking={vllmChecking}
-            onUpdateConfigField={updateConfigField}
-            onSaveConfig={saveConfig}
-            onSetPullTarget={setPullTarget}
-            onPullModel={pullModel}
-            onSetVllmBaseUrl={setVllmBaseUrl}
-            onCheckVllm={checkVllm}
-            onExportSettings={exportSettings}
-            onImportFile={handleImportFile}
-          />
-        )}
-        {tab === "persona" && <PersonaTab />}
+
+        {/* LOGS */}
         {tab === "logs" && (
-          <LogsTab
-            logs={logs}
-            streaming={streaming}
-            logSearch={logSearch}
-            logFilter={logFilter}
-            exportMsg={exportMsg}
-            logsEndRef={logsEndRef}
-            onStartStreaming={startStreaming}
-            onClearLogs={() => setLogs([])}
-            onSetLogSearch={setLogSearch}
-            onSetLogFilter={setLogFilter}
-            onExportLogs={handleExportLogs}
-          />
+          <div className="flex flex-col h-full">
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-zinc-800">
+              <Dot ok={streaming} pulse />
+              <span className="text-xs text-zinc-500">{streaming ? "streaming" : "idle"}</span>
+              <button onClick={startStreaming} className="ml-auto text-xs text-zinc-500 hover:text-zinc-300">
+                {streaming ? "Restart" : "Start streaming"}
+              </button>
+              <button onClick={() => setLogs([])} className="text-xs text-zinc-500 hover:text-zinc-300">Clear</button>
+            </div>
+            <div className="flex-1 overflow-auto p-4 space-y-0.5 bg-zinc-950">
+              {logs.length === 0 ? (
+                <p className="text-xs text-zinc-600">No logs yet. Start the agent to see activity.</p>
+              ) : (
+                logs.map((line, i) => {
+                  const isError = /error|fail|exception/i.test(line);
+                  const isWarn = /warn/i.test(line);
+                  return (
+                    <div key={i} className={`text-xs font-mono leading-relaxed ${isError ? "text-red-400" : isWarn ? "text-yellow-400" : "text-zinc-400"}`}>
+                      {line}
+                    </div>
+                  );
+                })
+              )}
+              <div ref={logsEndRef} />
+            </div>
+          </div>
+        )}
+
+        {/* CONFIG */}
+        {tab === "config" && (
+          <div className="p-4 space-y-4">
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-xs text-zinc-500 uppercase tracking-wider">AI Provider</label>
+                <select value={provider} onChange={(e) => updateConfigField(["llm", "provider"], e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-orange-500">
+                  <option value="anthropic">Anthropic — Claude models</option>
+                  <option value="openai">OpenAI — GPT models</option>
+                  <option value="ollama">Ollama — local, free</option>
+                  <option value="vllm">vLLM — self-hosted</option>
+                </select>
+              </div>
+
+              {(provider === "anthropic" || provider === "openai") && (
+                <div className="space-y-1">
+                  <label className="text-xs text-zinc-500 uppercase tracking-wider">API Key</label>
+                  <input type="password" value={apiKey}
+                    onChange={(e) => updateConfigField(["llm", "api_key"], e.target.value)}
+                    placeholder={provider === "anthropic" ? "sk-ant-..." : "sk-..."}
+                    className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-orange-500 placeholder:text-zinc-600" />
+                </div>
+              )}
+
+              {provider === "vllm" && (
+                <div className="space-y-1">
+                  <label className="text-xs text-zinc-500 uppercase tracking-wider">Server URL</label>
+                  <div className="flex gap-2">
+                    <input type="text" value={vllmBaseUrl} onChange={(e) => setVllmBaseUrl(e.target.value)}
+                      className="flex-1 bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-orange-500" />
+                    <button onClick={checkVllm} disabled={vllmChecking}
+                      className="px-3 py-1 rounded text-xs bg-zinc-700 text-zinc-200 hover:bg-zinc-600 disabled:opacity-50">
+                      {vllmChecking ? "..." : "Check"}
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <Dot ok={vllmRunning} />
+                    <span className="text-xs text-zinc-500">{vllmRunning ? `${vllmModels.length} model(s) found` : "not connected"}</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <label className="text-xs text-zinc-500 uppercase tracking-wider">Model</label>
+                {provider === "ollama" ? (
+                  <select value={model} onChange={(e) => updateConfigField(["llm", "model"], e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-orange-500">
+                    {ollamaModels.length === 0 && <option value="">No models — pull one below</option>}
+                    {ollamaModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                ) : provider === "vllm" ? (
+                  <select value={model} onChange={(e) => updateConfigField(["llm", "model"], e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-orange-500">
+                    {vllmModels.length === 0 && <option value="">Check server first</option>}
+                    {vllmModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                ) : (
+                  <input type="text" value={model} onChange={(e) => updateConfigField(["llm", "model"], e.target.value)}
+                    placeholder={provider === "anthropic" ? "claude-sonnet-4-6" : "gpt-4o"}
+                    className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1.5 text-zinc-200 text-xs focus:outline-none focus:border-orange-500 placeholder:text-zinc-600" />
+                )}
+              </div>
+            </div>
+
+            {provider === "ollama" && (
+              <div className="p-3 bg-zinc-900 rounded space-y-3">
+                <div className="flex items-center gap-2">
+                  <Dot ok={ollamaOk} />
+                  <span className="text-xs text-zinc-400">{ollamaOk ? `Ollama · ${ollamaModels.length} model(s)` : "Ollama not installed"}</span>
+                  {!ollamaOk && (
+                    <button onClick={() => invoke("install_ollama")} className="ml-auto text-xs text-orange-400 hover:underline">Install →</button>
+                  )}
+                </div>
+                {ollamaOk && (
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <select value={pullTarget} onChange={(e) => setPullTarget(e.target.value)}
+                        className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-zinc-200 text-xs">
+                        {POPULAR_OLLAMA_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                      <button onClick={pullModel} disabled={pulling}
+                        className="px-3 py-1 rounded text-xs bg-orange-500 text-white hover:bg-orange-600 disabled:opacity-50">
+                        {pulling ? "Pulling..." : "Pull"}
+                      </button>
+                    </div>
+                    {pullMsg && <p className="text-xs text-zinc-400 truncate">{pullMsg}</p>}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {provider === "vllm" && (
+              <div className="p-3 bg-zinc-900 rounded text-xs text-zinc-500 space-y-1">
+                <code className="block bg-zinc-800 px-2 py-1 rounded">pip install vllm</code>
+                <code className="block bg-zinc-800 px-2 py-1 rounded">vllm serve &lt;model&gt;</code>
+              </div>
+            )}
+
+            <button onClick={saveConfig} className="w-full py-2.5 rounded text-xs bg-orange-500 text-white hover:bg-orange-600 font-medium">
+              Save and continue →
+            </button>
+            {saveMsg && <p className="text-xs text-zinc-400">{saveMsg}</p>}
+          </div>
         )}
       </div>
     </div>
