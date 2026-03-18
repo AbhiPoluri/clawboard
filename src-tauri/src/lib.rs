@@ -14,6 +14,11 @@ fn openclaw_log_path() -> PathBuf {
     PathBuf::from(home).join(".openclaw").join("openclaw.log")
 }
 
+fn openclaw_history_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".openclaw").join("history.json")
+}
+
 // ── Config ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -351,6 +356,26 @@ fn import_settings(data: String) -> Result<(), String> {
     Ok(())
 }
 
+// ── History ───────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn read_history() -> String {
+    let path = openclaw_history_path();
+    if !path.exists() {
+        return "[]".to_string();
+    }
+    std::fs::read_to_string(&path).unwrap_or_else(|_| "[]".to_string())
+}
+
+#[tauri::command]
+fn clear_history() -> Result<(), String> {
+    let path = openclaw_history_path();
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // ── Export logs ───────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -441,6 +466,8 @@ pub fn run() {
             write_persona,
             export_settings,
             import_settings,
+            read_history,
+            clear_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
