@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./index.css";
 
-type Tab = "status" | "channels" | "config" | "persona" | "logs";
+type Tab = "status" | "channels" | "config" | "persona" | "logs" | "history";
 type Provider = "anthropic" | "openai" | "ollama" | "vllm";
 type Step = "check" | "install_node" | "install_openclaw" | "config" | "ready";
 
@@ -16,6 +16,14 @@ interface ChannelStatus {
   name: string;
   connected: boolean;
   description: string;
+}
+
+interface HistoryEntry {
+  timestamp: string;
+  channel: string;
+  user_message: string;
+  agent_response: string;
+  user_name?: string;
 }
 
 const CHANNEL_ICONS: Record<string, string> = {
@@ -95,6 +103,11 @@ export default function App() {
   const [vllmRunning, setVllmRunning] = useState(false);
   const [vllmModels, setVllmModels] = useState<string[]>([]);
   const [vllmChecking, setVllmChecking] = useState(false);
+
+  // History
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [expandedHistory, setExpandedHistory] = useState<number | null>(null);
+  const [clearConfirm, setClearConfirm] = useState(false);
 
   // Model parameters
   const [temperature, setTemperature] = useState(0.7);
@@ -360,12 +373,29 @@ export default function App() {
     setPersonaMsg("");
   }
 
+  async function loadHistory() {
+    try {
+      const raw: string = await invoke("read_history");
+      const parsed: HistoryEntry[] = JSON.parse(raw);
+      setHistory(parsed.slice().reverse());
+    } catch { setHistory([]); }
+  }
+
+  async function clearHistoryData() {
+    try {
+      await invoke("clear_history");
+      setHistory([]);
+      setClearConfirm(false);
+    } catch { /* ignore */ }
+  }
+
   const tabs: { id: Tab; label: string }[] = [
     { id: "status", label: "Status" },
     { id: "channels", label: "Channels" },
     { id: "config", label: "Config" },
     { id: "persona", label: "Persona" },
     { id: "logs", label: "Logs" },
+    { id: "history", label: "History" },
   ];
 
   return (
@@ -383,7 +413,7 @@ export default function App() {
       {/* Tabs */}
       <div className="flex border-b border-zinc-800">
         {tabs.map(({ id, label }) => (
-          <button key={id} onClick={() => { setTab(id); if (id === "logs") startStreaming(); if (id === "persona") loadPersona(); }}
+          <button key={id} onClick={() => { setTab(id); if (id === "logs") startStreaming(); if (id === "persona") loadPersona(); if (id === "history") loadHistory(); }}
             className={`flex-1 py-2 text-xs transition-colors ${tab === id ? "text-orange-400 border-b-2 border-orange-500" : "text-zinc-500 hover:text-zinc-300"}`}>
             {label}
           </button>
@@ -889,6 +919,105 @@ export default function App() {
             </div>
           </div>
         )}
+        {/* ── HISTORY ── */}
+        {tab === "history" && (() => {
+          const CHANNEL_BADGES: Record<string, string> = {
+            imessage: "bg-blue-900 text-blue-300",
+            whatsapp: "bg-green-900 text-green-300",
+            telegram: "bg-blue-800 text-blue-400",
+            discord: "bg-indigo-900 text-indigo-300",
+            slack: "bg-purple-900 text-purple-300",
+          };
+
+          function fmtTime(ts: string) {
+            try {
+              const d = new Date(ts);
+              return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+            } catch { return ts; }
+          }
+
+          return (
+            <div className="flex flex-col h-full">
+              {/* Top bar */}
+              <div className="flex items-center gap-2 px-4 py-2 border-b border-zinc-800">
+                <span className="text-xs text-zinc-400">{history.length} conversation{history.length !== 1 ? "s" : ""}</span>
+                <button onClick={loadHistory} className="ml-auto text-xs text-zinc-500 hover:text-zinc-300">Refresh</button>
+                {!clearConfirm ? (
+                  <button
+                    onClick={() => setClearConfirm(true)}
+                    className="text-xs text-red-500 hover:text-red-400"
+                  >
+                    Clear History
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-zinc-400">Sure?</span>
+                    <button onClick={clearHistoryData} className="text-xs text-red-400 hover:text-red-300 font-medium">Yes, delete</button>
+                    <button onClick={() => setClearConfirm(false)} className="text-xs text-zinc-500 hover:text-zinc-300">Cancel</button>
+                  </div>
+                )}
+              </div>
+
+              {/* List */}
+              <div className="flex-1 overflow-auto p-4 space-y-2">
+                {history.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-40 gap-3 text-zinc-600">
+                    <span className="text-3xl">💬</span>
+                    <p className="text-xs">No conversation history yet</p>
+                  </div>
+                ) : (
+                  history.map((entry, i) => {
+                    const isExpanded = expandedHistory === i;
+                    const badgeClass = CHANNEL_BADGES[entry.channel] ?? "bg-zinc-800 text-zinc-400";
+                    return (
+                      <div
+                        key={i}
+                        className="bg-zinc-900 rounded overflow-hidden cursor-pointer hover:bg-zinc-800 transition-colors"
+                        onClick={() => setExpandedHistory(isExpanded ? null : i)}
+                      >
+                        {/* Header row */}
+                        <div className="flex items-start gap-2 p-3">
+                          <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${badgeClass}`}>
+                            {entry.channel}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            {entry.user_name && (
+                              <p className="text-xs text-zinc-400 mb-0.5">{entry.user_name}</p>
+                            )}
+                            <p className="text-xs text-zinc-200 truncate">
+                              {isExpanded ? entry.user_message : entry.user_message.slice(0, 80) + (entry.user_message.length > 80 ? "…" : "")}
+                            </p>
+                            {!isExpanded && (
+                              <p className="text-xs text-zinc-500 truncate mt-0.5">
+                                ↳ {entry.agent_response.slice(0, 80)}{entry.agent_response.length > 80 ? "…" : ""}
+                              </p>
+                            )}
+                          </div>
+                          <span className="text-xs text-zinc-600 flex-shrink-0 whitespace-nowrap">{fmtTime(entry.timestamp)}</span>
+                        </div>
+
+                        {/* Expanded content */}
+                        {isExpanded && (
+                          <div className="border-t border-zinc-800 px-3 pb-3 pt-2 space-y-3">
+                            <div>
+                              <p className="text-xs text-zinc-500 mb-1">User</p>
+                              <p className="text-xs text-zinc-200 whitespace-pre-wrap">{entry.user_message}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-zinc-500 mb-1">Agent</p>
+                              <p className="text-xs text-zinc-300 whitespace-pre-wrap">{entry.agent_response}</p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
       </div>
     </div>
   );
