@@ -2,8 +2,9 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./index.css";
+import { AnalyticsTab } from "./components/AnalyticsTab";
 
-type Tab = "status" | "channels" | "logs" | "config" | "persona" | "history";
+type Tab = "status" | "channels" | "logs" | "config" | "persona" | "history" | "analytics";
 type Provider = "anthropic" | "openai" | "ollama" | "vllm";
 type Step = "check" | "install_node" | "install_openclaw" | "config" | "ready";
 type ToastType = "success" | "error" | "info";
@@ -181,6 +182,7 @@ export default function App() {
       else if (e.key === "4") { e.preventDefault(); setTab("config"); }
       else if (e.key === "5") { e.preventDefault(); setTab("persona"); loadPersona(); }
       else if (e.key === "6") { e.preventDefault(); setTab("history"); loadHistory(); }
+      else if (e.key === "7") { e.preventDefault(); setTab("analytics"); loadHistory(); }
       else if (e.key === "l" || e.key === "L") { e.preventDefault(); setTab("logs"); startStreaming(); }
       else if (e.key === ",") { e.preventDefault(); setTab("config"); }
     }
@@ -502,6 +504,7 @@ export default function App() {
     { id: "config", label: "Config", shortcut: "⌘4" },
     { id: "persona", label: "Persona", shortcut: "⌘5" },
     { id: "history", label: "History", shortcut: "⌘6" },
+    { id: "analytics", label: "Analytics", shortcut: "⌘7" },
   ];
 
   return (
@@ -539,6 +542,7 @@ export default function App() {
             if (id === "logs") startStreaming();
             if (id === "persona") loadPersona();
             if (id === "history") loadHistory();
+            if (id === "analytics") loadHistory();
           }}
             className={`flex-1 py-2 text-xs transition-colors group relative ${tab === id ? "text-orange-400 border-b-2 border-orange-500" : "text-zinc-500 hover:text-zinc-300"}`}>
             {label}
@@ -1077,6 +1081,9 @@ export default function App() {
             {personaMsg && <p className="text-xs text-zinc-400">{personaMsg}</p>}
           </div>
         )}
+
+        {/* ANALYTICS */}
+        {tab === "analytics" && <AnalyticsTab history={history} />}
 
         {/* HISTORY */}
         {tab === "history" && (() => {
