@@ -295,6 +295,82 @@ fn vllm_list_models(base_url: String) -> Vec<String> {
     }
 }
 
+// ── Persona ───────────────────────────────────────────────────────────────────
+
+fn persona_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".openclaw").join("persona.json")
+}
+
+#[tauri::command]
+fn read_persona() -> Result<String, String> {
+    let path = persona_path();
+    if !path.exists() {
+        return Ok("{}".to_string());
+    }
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_persona(persona: String) -> Result<(), String> {
+    let path = persona_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, persona).map_err(|e| e.to_string())
+}
+
+// ── Settings export / import ──────────────────────────────────────────────────
+
+#[tauri::command]
+fn export_settings() -> Result<String, String> {
+    let config = read_config().unwrap_or("{}".to_string());
+    let parsed: serde_json::Value = serde_json::from_str(&config).unwrap_or_default();
+    let persona = read_persona().unwrap_or("{}".to_string());
+    let persona_parsed: serde_json::Value = serde_json::from_str(&persona).unwrap_or_default();
+    let combined = serde_json::json!({
+        "config": parsed,
+        "persona": persona_parsed,
+    });
+    serde_json::to_string_pretty(&combined).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_settings(data: String) -> Result<(), String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(&data).map_err(|e| format!("Invalid JSON: {}", e))?;
+    // Support both wrapped format {"config": ..., "persona": ...} and bare config
+    if let Some(config) = parsed.get("config") {
+        write_config(config.to_string())?;
+    } else {
+        write_config(data.clone())?;
+    }
+    if let Some(persona) = parsed.get("persona") {
+        write_persona(persona.to_string())?;
+    }
+    Ok(())
+}
+
+// ── Export logs ───────────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn save_logs(content: String) -> Result<String, String> {
+    let handle = rfd::AsyncFileDialog::new()
+        .set_title("Save Logs")
+        .set_file_name("openclaw-logs.txt")
+        .add_filter("Text files", &["txt"])
+        .save_file()
+        .await;
+
+    match handle {
+        Some(path) => {
+            std::fs::write(path.path(), content).map_err(|e| e.to_string())?;
+            Ok("Saved.".to_string())
+        }
+        None => Err("Cancelled".to_string()),
+    }
+}
+
 // ── Install helpers ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -360,6 +436,11 @@ pub fn run() {
             node_installed,
             install_openclaw,
             install_ollama,
+            save_logs,
+            read_persona,
+            write_persona,
+            export_settings,
+            import_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
