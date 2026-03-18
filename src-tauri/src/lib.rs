@@ -14,6 +14,11 @@ fn openclaw_log_path() -> PathBuf {
     PathBuf::from(home).join(".openclaw").join("openclaw.log")
 }
 
+fn openclaw_history_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".openclaw").join("history.json")
+}
+
 // ── Config ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -295,6 +300,166 @@ fn vllm_list_models(base_url: String) -> Vec<String> {
     }
 }
 
+// ── Persona ───────────────────────────────────────────────────────────────────
+
+fn persona_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".openclaw").join("persona.json")
+}
+
+#[tauri::command]
+fn read_persona() -> Result<String, String> {
+    let path = persona_path();
+    if !path.exists() {
+        return Ok("{}".to_string());
+    }
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_persona(persona: String) -> Result<(), String> {
+    let path = persona_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, persona).map_err(|e| e.to_string())
+}
+
+// ── Settings export / import ──────────────────────────────────────────────────
+
+#[tauri::command]
+fn export_settings() -> Result<String, String> {
+    let config = read_config().unwrap_or("{}".to_string());
+    let parsed: serde_json::Value = serde_json::from_str(&config).unwrap_or_default();
+    let persona = read_persona().unwrap_or("{}".to_string());
+    let persona_parsed: serde_json::Value = serde_json::from_str(&persona).unwrap_or_default();
+    let combined = serde_json::json!({
+        "config": parsed,
+        "persona": persona_parsed,
+    });
+    serde_json::to_string_pretty(&combined).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_settings(data: String) -> Result<(), String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(&data).map_err(|e| format!("Invalid JSON: {}", e))?;
+    // Support both wrapped format {"config": ..., "persona": ...} and bare config
+    if let Some(config) = parsed.get("config") {
+        write_config(config.to_string())?;
+    } else {
+        write_config(data.clone())?;
+    }
+    if let Some(persona) = parsed.get("persona") {
+        write_persona(persona.to_string())?;
+    }
+    Ok(())
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn read_history() -> String {
+    let path = openclaw_history_path();
+    if !path.exists() {
+        return "[]".to_string();
+    }
+    std::fs::read_to_string(&path).unwrap_or_else(|_| "[]".to_string())
+}
+
+#[tauri::command]
+fn clear_history() -> Result<(), String> {
+    let path = openclaw_history_path();
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ── Export logs ───────────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn save_logs(content: String) -> Result<String, String> {
+    let handle = rfd::AsyncFileDialog::new()
+        .set_title("Save Logs")
+        .set_file_name("openclaw-logs.txt")
+        .add_filter("Text files", &["txt"])
+        .save_file()
+        .await;
+
+    match handle {
+        Some(path) => {
+            std::fs::write(path.path(), content).map_err(|e| e.to_string())?;
+            Ok("Saved.".to_string())
+        }
+        None => Err("Cancelled".to_string()),
+    }
+}
+
+// ── Channel test ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn test_channel(channel: String) -> bool {
+    match channel.as_str() {
+        "imessage" => {
+            std::path::Path::new("/System/Applications/Messages.app").exists()
+                || std::path::Path::new("/Applications/Messages.app").exists()
+        }
+        name => {
+            let config_str = read_config().unwrap_or_default();
+            let config: serde_json::Value =
+                serde_json::from_str(&config_str).unwrap_or_default();
+            let token = config
+                .get("channels")
+                .and_then(|c| c.get(name))
+                .and_then(|v| v.get("token"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if token.is_empty() {
+                return false;
+            }
+
+            match name {
+                "telegram" => {
+                    let url = format!("https://api.telegram.org/bot{}/getMe", token);
+                    Command::new("curl")
+                        .args(["-sf", "--max-time", "5", &url])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false)
+                }
+                "discord" => Command::new("curl")
+                    .args([
+                        "-sf",
+                        "--max-time",
+                        "5",
+                        "-H",
+                        &format!("Authorization: Bot {}", token),
+                        "https://discord.com/api/v10/users/@me",
+                    ])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false),
+                "slack" => Command::new("curl")
+                    .args([
+                        "-sf",
+                        "--max-time",
+                        "5",
+                        "-H",
+                        &format!("Authorization: Bearer {}", token),
+                        "https://slack.com/api/auth.test",
+                    ])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false),
+                _ => !token.is_empty(),
+            }
+        }
+    }
+}
+
 // ── Install helpers ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -360,6 +525,14 @@ pub fn run() {
             node_installed,
             install_openclaw,
             install_ollama,
+            test_channel,
+            save_logs,
+            read_persona,
+            write_persona,
+            export_settings,
+            import_settings,
+            read_history,
+            clear_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
