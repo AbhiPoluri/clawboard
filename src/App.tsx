@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { CommandPalette } from "./components/CommandPalette";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./index.css";
 import { AnalyticsTab } from "./components/AnalyticsTab";
 
@@ -599,6 +600,7 @@ export default function App() {
 
         {/* STATUS */}
         {tab === "status" && (
+          <ErrorBoundary label="Status">
           <div className="p-4 space-y-4">
             {step === "check" && <p className="text-xs text-zinc-500 animate-pulse">Checking setup...</p>}
 
@@ -696,10 +698,12 @@ export default function App() {
               </div>
             )}
           </div>
+          </ErrorBoundary>
         )}
 
         {/* CHANNELS */}
         {tab === "channels" && (
+          <ErrorBoundary label="Channels">
           <div className="p-4 space-y-2">
             <p className="text-xs text-zinc-500 mb-3">Connect messaging platforms to your agent.</p>
             {channels.map((ch) => {
@@ -770,10 +774,11 @@ export default function App() {
             })}
             <button onClick={loadChannels} className="mt-2 text-xs text-zinc-500 hover:text-zinc-300">Refresh</button>
           </div>
+          </ErrorBoundary>
         )}
 
         {/* LOGS */}
-        {tab === "logs" && (() => {
+        {tab === "logs" && (<ErrorBoundary label="Logs">{(() => {
           const filtered = logs.filter((line) => {
             const isError = /error|fail|exception/i.test(line);
             const isWarn = /warn/i.test(line);
@@ -864,10 +869,11 @@ export default function App() {
               </div>
             </div>
           );
-        })()}
+        })()}</ErrorBoundary>}
 
         {/* CONFIG */}
         {tab === "config" && (
+          <ErrorBoundary label="Config">
           <div className="p-4 space-y-4">
             <div className="space-y-3">
               <div className="space-y-1">
@@ -1047,10 +1053,12 @@ export default function App() {
               {settingsMsg && <p className="text-xs text-zinc-400">{settingsMsg}</p>}
             </div>
           </div>
+          </ErrorBoundary>
         )}
 
         {/* PERSONA */}
         {tab === "persona" && (
+          <ErrorBoundary label="Persona">
           <div className="p-4 space-y-4">
             <p className="text-xs text-zinc-500">Define your agent's personality and communication style.</p>
 
@@ -1122,13 +1130,14 @@ export default function App() {
             </div>
             {personaMsg && <p className="text-xs text-zinc-400">{personaMsg}</p>}
           </div>
+          </ErrorBoundary>
         )}
 
         {/* ANALYTICS */}
-        {tab === "analytics" && <AnalyticsTab history={history} />}
+        {tab === "analytics" && <ErrorBoundary label="Analytics"><AnalyticsTab history={history} /></ErrorBoundary>}
 
         {/* HISTORY */}
-        {tab === "history" && (() => {
+        {tab === "history" && (<ErrorBoundary label="History">{(() => {
           const CHANNEL_BADGES: Record<string, string> = {
             imessage: "bg-blue-900 text-blue-300",
             whatsapp: "bg-green-900 text-green-300",
@@ -1222,7 +1231,7 @@ export default function App() {
               </div>
             </div>
           );
-        })()}
+        })()}</ErrorBoundary>}
 
       </div>
 
